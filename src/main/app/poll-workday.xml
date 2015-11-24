@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw"
+	xmlns:wd-hr="http://www.mulesoft.org/schema/mule/wd-hr" xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/wd-hr http://www.mulesoft.org/schema/mule/wd-hr/current/mule-wd-hr.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd">
+	<wd-hr:config name="WorkdayHumanResource" doc:name="Workday Human Resource"
+		hrEndpoint="${wday.endpoint}" hrPassword="${wday.password}" hrUser="${wday.user}">
+		<wd-hr:connection-pooling-profile
+			initialisationPolicy="INITIALISE_ONE" exhaustedAction="WHEN_EXHAUSTED_GROW" />
+	</wd-hr:config>
+
+	<flow name="poll.worker.update" processingStrategy="synchronous">
+		<poll doc:name="poll.worker.update.config">
+			<fixed-frequency-scheduler frequency="30"
+				timeUnit="SECONDS" />
+			<watermark variable="lastQueryDate"
+				default-expression="#[server.dateTime.plusHours(-1).toString()]" selector="MAX" selector-expression="#[groovy: payload.workerData.transactionLogEntryData.transactionLogEntry.max{it.transactionLogData.transactionEntryMoment}.transactionLogData.transactionEntryMoment.format(&quot;yyyy-MM-dd'T'HH:mm:ss.SSSXXX&quot;)]"/>
+			<processor-chain doc:name="workday.query">
+				
+				<set-variable variableName="updatedFrom"
+					value="#[new org.mule.el.datetime.DateTime(lastQueryDate).plusMilliSeconds(1).toCalendar()]"
+					doc:name="updatedFrom" />
+				<dw:transform-message doc:name="Create WD Request">
+					<dw:set-payload><![CDATA[%dw 1.0
+%output application/java
+---
+{
+	requestCriteria: {
+		transactionLogCriteriaData: [{
+			transactionDateRangeData: {
+				updatedFrom: flowVars.updatedFrom,
+				updatedThrough: now
+			} as :object {
+				class : "com.workday.hr.EffectiveAndUpdatedDateTimeDataType"
+			}
+		} as :object {
+			class : "com.workday.hr.TransactionLogCriteriaType"
+		}]
+	} as :object {
+		class : "com.workday.hr.WorkerRequestCriteriaType"
+	},
+	responseGroup: {
+		includeEmploymentInformation: true,
+		includePersonalInformation: true,
+		includeOrganizations: true,
+		includeReference: true,
+		includeUserAccount: true,
+		includeTransactionLogData: true,
+		includeRoles: true
+	} as :object {
+		class : "com.workday.hr.WorkerResponseGroupType"
+	}
+} as :object {
+	class : "com.workday.hr.GetWorkersRequestType"
+}]]></dw:set-payload>
+				</dw:transform-message>
+
+				<wd-hr:get-workers config-ref="WorkdayHumanResource"
+					doc:name="get.updated.workers" />
+				
+				<dw:transform-message doc:name="Get list of workers">
+					<dw:set-payload><![CDATA[%dw 1.0
+%output application/java
+---
+
+payload.responseData.worker  when payload.responseResults.totalResults > 0.0
+otherwise []]]></dw:set-payload>
+				</dw:transform-message>
+
+	
+			</processor-chain>
+		</poll>
+
+		<foreach doc:name="For Each">
+            <logger message="************************************ -- NEW EMPLOYEE -- ************************************" level="INFO" doc:name="New Employee"/>
+			
+			<logger
+				message="#[payload.workerData.personalData.nameData.legalNameData.nameDetailData.firstName] #[payload.workerData.personalData.nameData.legalNameData.nameDetailData.lastName]"
+				level="INFO" doc:name="Print employee name" />
+			<logger message="#[payload.workerData.workerID]" level="INFO"
+				doc:name="Worker ID" />
+         
+		</foreach>
+
+
+
+	</flow>
+
+</mule>
